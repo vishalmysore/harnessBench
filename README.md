@@ -19,7 +19,7 @@ HarnessBench is a working implementation of these principles in the browser. See
 
 ## Live Demo
 
-**[https://vishalmysore.github.io/harnessBench](https://vishalmysore.github.io/harnessBench)**
+**[https://vishalmysore.github.io/harnessBench/](https://vishalmysore.github.io/harnessBench/)**
 
 > Requires Chrome or Edge with hardware acceleration enabled (WebGPU). Firefox is not supported.
 
