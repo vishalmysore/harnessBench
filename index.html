@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HarnessBench — In-Browser Agent Evaluator</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <div class="logo">
+        <span class="logo-icon">⚙</span>
+        <span class="logo-text">HarnessBench</span>
+        <span class="logo-sub">In-Browser Agent Evaluator</span>
+      </div>
+      <div class="header-badges">
+        <span class="badge badge-gpu">WebGPU</span>
+        <span class="badge badge-local">100% Local</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- Left column: config + raw logs -->
+    <div class="col col-left">
+
+      <section class="card">
+        <h2 class="card-title">1. Load Model</h2>
+        <div class="field">
+          <label for="model-select">Model</label>
+          <select id="model-select">
+            <option value="SmolLM2-1.7B-Instruct-q4f16_1-MLC">SmolLM2-1.7B (Recommended · ~1GB)</option>
+            <option value="Llama-3.2-1B-Instruct-q4f16_1-MLC">Llama 3.2 1B (~0.8GB)</option>
+            <option value="Llama-3.2-3B-Instruct-q4f32_1-MLC">Llama 3.2 3B (~1.8GB)</option>
+            <option value="Llama-3.1-8B-Instruct-q4f16_1-MLC">Llama 3.1 8B (~5GB · needs strong GPU)</option>
+            <option value="Phi-3.5-mini-instruct-q4f16_1-MLC">Phi-3.5 Mini (~2.3GB)</option>
+            <option value="gemma-2-2b-it-q4f16_1-MLC">Gemma 2 2B (~1.4GB)</option>
+          </select>
+        </div>
+        <div id="load-progress" class="progress-wrap" hidden>
+          <div class="progress-track">
+            <div id="progress-bar" class="progress-fill"></div>
+          </div>
+          <div class="progress-row">
+            <div id="model-status" class="progress-label">Initializing…</div>
+            <div id="progress-pct" class="progress-pct">0%</div>
+          </div>
+        </div>
+        <button id="load-model-btn" class="btn btn-primary">Load Model</button>
+        <p class="hint">Weights are downloaded once and cached locally. No data leaves your device.</p>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">2. Define Task</h2>
+        <div class="field">
+          <label for="task-input">Task Prompt</label>
+          <textarea id="task-input" rows="3" placeholder="e.g. Create a file called note.txt with the content 'hello world', then read it back."></textarea>
+        </div>
+        <div class="field field-inline">
+          <label for="max-steps">Max Steps</label>
+          <input id="max-steps" type="number" value="8" min="1" max="20" />
+        </div>
+        <div class="action-row">
+          <button id="run-btn" class="btn btn-success" disabled>▶ Run Evaluation</button>
+          <button id="reset-btn" class="btn btn-ghost">Reset</button>
+        </div>
+        <div class="examples">
+          <span class="examples-label">Try:</span>
+          <button class="example-chip" data-task="Create a file called note.txt with the content 'hello world', then read it back.">Create &amp; read file</button>
+          <button class="example-chip" data-task="Set a variable called 'score' to 99, then retrieve it and confirm.">Set variable</button>
+          <button class="example-chip" data-task="Create three files: a.txt, b.txt, and c.txt each with some content. Then list all files.">Create 3 files</button>
+          <button class="example-chip" data-task="Create a file called data.txt with content 'original'. Then delete it and confirm it no longer exists.">Create then delete</button>
+        </div>
+      </section>
+
+      <section class="card card-logs">
+        <div class="card-title-row">
+          <h2 class="card-title">Raw Log</h2>
+          <button id="clear-logs-btn" class="btn btn-ghost btn-sm">Clear</button>
+        </div>
+        <div id="logs" class="logs"></div>
+      </section>
+
+    </div>
+
+    <!-- Right column: agent trace + state -->
+    <div class="col col-right">
+
+      <!-- Verdict -->
+      <div id="verdict" class="verdict" hidden></div>
+
+      <!-- Stats bar -->
+      <div id="stats-bar" class="stats-bar" hidden></div>
+
+      <!-- Live token stream -->
+      <section class="card">
+        <div class="card-title-row">
+          <h2 class="card-title">▸ Live Token Stream</h2>
+          <span id="stream-status" class="stream-badge stream-idle">idle</span>
+        </div>
+        <pre id="token-stream" class="token-stream">(model output will appear here in real-time…)</pre>
+      </section>
+
+      <!-- Agent Trace -->
+      <section class="card">
+        <div class="card-title-row">
+          <h2 class="card-title">Agent Trace</h2>
+          <span id="step-counter" class="step-counter">—</span>
+        </div>
+        <div id="trace" class="trace">
+          <div class="trace-empty">Run an evaluation to see the agent's reasoning and actions here.</div>
+        </div>
+      </section>
+
+      <!-- Sandbox State -->
+      <section class="card">
+        <div class="card-title-row">
+          <h2 class="card-title">Sandbox State</h2>
+          <span id="state-badge" class="stream-badge stream-idle">empty</span>
+        </div>
+        <pre id="state-view" class="state-view">{
+  "files": {},
+  "vars": {},
+  "logs": []
+}</pre>
+      </section>
+
+      <!-- Registered Actions -->
+      <section class="card">
+        <h2 class="card-title">Registered Actions</h2>
+        <div id="actions-editor" class="actions-list"></div>
+      </section>
+
+      <!-- Harness Self-Tests -->
+      <section class="card">
+        <div class="card-title-row">
+          <h2 class="card-title">Harness Verification</h2>
+          <button id="test-harness-btn" class="btn btn-ghost btn-sm">▶ Run Tests</button>
+        </div>
+        <p class="hint" style="margin-bottom:0.75rem">Deterministic tests that verify the harness machinery — no model needed. Covers the action registry, sandbox isolation, unknown action enforcement, judge correctness, JSON repair, and context trimming.</p>
+        <div id="test-summary" class="test-summary" hidden></div>
+        <div id="test-panel" class="test-panel" hidden>
+          <div id="test-results" class="test-results"></div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <footer>
+    <p>Runs entirely in your browser · WebGPU · No server · No API keys ·
+      <a href="https://github.com/mlc-ai/web-llm" target="_blank" rel="noopener">Powered by WebLLM</a>
+    </p>
+  </footer>
+
+  <script type="module" src="app.js"></script>
+  <script>
+    document.querySelectorAll(".example-chip").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.getElementById("task-input").value = btn.dataset.task;
+      });
+    });
+  </script>
+</body>
+</html>
