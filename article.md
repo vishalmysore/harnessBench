@@ -1,291 +1,138 @@
-# Harness Engineering for AI Agents: A Practical Implementation
+# HarnessBench: Test an AI Agent Entirely in Your Browser, With No Server and No API Keys
 
-Harness engineering for AI agents is the practice of designing and building the isolated software infrastructure used to safely run, test, and evaluate autonomous models. Unlike static AI chatbots that simply output text, agents interact with the world by running code, calling APIs, and altering databases across complex, multi-step workflows. A harness acts as a controlled laboratory environment — typically utilizing secure sandboxes like Docker or WebAssembly — that feeds specific tasks to the agent, intercepts and executes its requested actions, and records every step of its logical trajectory like a flight data recorder.
+*How a small evaluation harness running a local LLM on WebGPU can tell you whether an agent actually did the job, not just whether it said it did.*
 
-The primary goal of harness engineering is to solve the difficult challenge of agent evaluation and safety. Because agents can be unpredictable and their operational environments can change dynamically, the harness acts as an objective "judge" by checking the final state of the system against specific criteria once the agent completes its run. By providing automated benchmarking, reproducible conditions, and strict guardrails to prevent harmful actions from leaking into production systems, harness engineering transforms unpredictable AI behavior into measurable, reliable software engineering.
+**Live demo:** [vishalmysore.github.io/harnessBench](https://vishalmysore.github.io/harnessBench/) · **Source:** [github.com/vishalmysore/harnessBench](https://github.com/vishalmysore/harnessBench)
 
-This article walks through **HarnessBench** — a fully browser-native implementation of these principles, running a local LLM on WebGPU with no server, no API keys, and no cloud infrastructure. Each component of the implementation maps directly to a core concept in harness engineering.
-
----
-
-## The Controlled Laboratory Environment
-
-The harness is not the model. It is the infrastructure that wraps the model during a run and controls every interaction it has with the outside world.
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                  HARNESS (The Laboratory)               │
-│                                                         │
-│  Action Registry        Agent Execution Loop            │
-│  (permitted operations) (feeds context, parses calls)   │
-│                                                         │
-│  Sandbox State          Judge                           │
-│  (isolated environment) (checks final state vs. task)   │
-└─────────────────────────────────────────────────────────┘
-                          ↑
-              Model runs inside this boundary.
-         It cannot reach outside it.
-```
-
-In HarnessBench the sandbox is an in-memory JavaScript object — the browser analog of a Docker container or WASM virtual file system. Every file the agent creates, every variable it stores, every action it takes lands inside this object. Nothing touches the real filesystem. Nothing reaches the network. The agent believes it is operating on a real system; it is operating on a controlled replica.
-
-```js
-// The sandbox — a fresh isolated state for every run
-let sandboxState = { files: {}, vars: {}, logs: [] };
-```
-
-Critically, the sandbox is **reset to empty before every run**. This is what makes conditions reproducible. Two evaluations of the same agent on the same task always start from an identical baseline.
+![HarnessBench home screen: load a model, define a task, watch the agent trace and sandbox state](docs/screenshots/01-overview.png)
 
 ---
 
-## Feeding Tasks and Intercepting Actions
+## The problem: agents grade their own homework
 
-The harness feeds a task to the agent through a structured system prompt that defines both the objective and the exact format the agent must use to request actions:
+An AI agent doesn't just write text. It calls tools: it creates files, stores values, deletes things. When you ask one to "create a file, then read it back", it will usually finish with a confident summary like *"Created the file and read it back successfully."*
 
-```js
-function generateSystemPrompt(registry) {
-  const actionList = Object.entries(registry)
-    .map(([name, def]) => `- ${name}: ${def.description}`)
-    .join("\n");
+That summary is not evidence. Small models in particular often:
 
-  return `You are an autonomous agent inside a browser sandbox.
-Respond ONLY with valid JSON:
-{
-  "thought": "<your reasoning>",
-  "action": "<action_name or final_answer>",
-  "parameters": { "<param>": "<value>" }
-}
+- stop after the first step and declare victory,
+- do the steps in the wrong order (try to read a file before creating it),
+- invent tools that don't exist,
+- repeat the same action over and over,
+- or break the output format the program expects.
 
-Available actions:
-${actionList}`;
-}
-```
+If you judge the agent by its final message, you'll score all of these as passes. You need something outside the model that controls what it can do, records what it actually did, and checks the result. That something is an **evaluation harness**.
 
-The agent does not call functions directly. It outputs a JSON object describing *what it wants to do*. The harness intercepts this output, validates it, and decides whether to execute it. This interception layer is where the harness exerts control.
+Most harnesses need real infrastructure: a server, Docker containers, a paid API key, a place to keep logs. That's a lot of setup just to find out whether an agent can follow a three-step instruction.
 
-```js
-// The harness intercepts every model output before anything executes
-const decision = JSON.parse(modelOutput); // parse the agent's request
+## The solution: a harness that lives in one browser tab
 
-// The harness decides whether to honour it
-const tool = actionRegistry[decision.action];
-if (!tool) {
-  // Hard stop — the agent requested something outside the lab
-  return { success: false, reason: `Unregistered action: ${decision.action}` };
-}
+HarnessBench is a single web page. It downloads an open-source model once, runs it on your own GPU through [WebLLM](https://github.com/mlc-ai/web-llm) and WebGPU, and wraps it in a small harness:
 
-// The harness executes it against the isolated sandbox
-const result = tool.execute(sandboxState, decision.parameters);
-```
+1. **A sandbox.** A fresh, empty in-memory "file system" and variable store for every run. Nothing the agent does touches your real disk or the network.
+2. **An action registry.** The six tools the agent may use: `create_file`, `read_file`, `list_files`, `delete_file`, `set_variable`, `get_variable`, plus `final_answer`. Anything else is refused.
+3. **An agent loop.** The model replies with one JSON decision per step (`thought`, `action`, `parameters`). The harness runs that action against the sandbox and feeds the result back.
+4. **A recorder.** Every step's thought, action, parameters and result goes into a live trace and an action log.
+5. **A judge.** When the agent says it's done, the harness ignores the summary and checks the facts: was every requested action actually called, and is the sandbox in the state the task asked for?
 
-The agent has no ability to bypass this. It cannot call `delete_database` by being persuasive. It cannot access the real filesystem by hallucinating a different API. Every action request passes through the harness registry — if it is not registered, it does not execute.
+No backend, no keys, no account. After the first download the model is cached by the browser, so later visits load in seconds.
 
----
+![Model loaded and ready](docs/screenshots/02-model-ready.png)
 
-## The Action Registry: Defining the Permission Boundary
+## What a passing run looks like
 
-The action registry is the formal declaration of what the agent is permitted to do. It is the harness's equivalent of a security policy.
+Pick a task (or click one of the "Try" chips) and press **Run Evaluation**. Here the agent was asked to *"Create a file called note.txt with the content 'hello world', then read it back."*
 
-```js
-const actionRegistry = {
-  create_file: {
-    description: "Creates a file in the sandbox. Parameters: { filename, content }",
-    execute: (state, { filename, content }) => {
-      state.files[filename] = content;
-      return `File "${filename}" created successfully.`;
-    },
-  },
-  read_file: {
-    description: "Reads an existing file. Parameters: { filename }",
-    execute: (state, { filename }) => {
-      if (state.files[filename] === undefined)
-        return `Error: File "${filename}" not found.`;
-      return state.files[filename];
-    },
-  },
-  delete_file: { /* ... */ },
-  list_files:  { /* ... */ },
-  set_variable: { /* ... */ },
-  get_variable: { /* ... */ },
-};
-```
+![A passing run: create_file, read_file, final_answer, judged PASSED](docs/screenshots/03-run-passed.png)
 
-If an action is not in this registry, it does not exist as far as the agent is concerned. The registry serves two purposes simultaneously:
+The page shows four things at once:
 
-1. **Documentation for the agent** — the `description` field is injected into the system prompt, so the agent knows exactly what is available
-2. **Enforcement for the harness** — the `execute` function is the only code that can run; there is no other path into the sandbox
+- **Verdict:** the judge's decision and its reason. Here it's `"note.txt" exists: "hello world"`, a fact about the sandbox, not a quote from the model.
+- **Live token stream:** the raw JSON as the model generates it.
+- **Agent trace:** one card per step with the thought, the action and its result.
+- **Sandbox state:** the actual files, variables and action log after the run.
 
-This is the "strict guardrail" that prevents harmful actions from leaking into production systems. The harness enforces it at the infrastructure level, not at the prompt level. Prompting the agent to "please don't delete the database" is not a guardrail — removing `delete_database` from the registry is.
+A longer task shows the trace more clearly. Asked to create three files and then list them, the 3B model created `a.txt`, `b.txt` and `c.txt` in order, listed them, and finished. (It also listed them a second time for no reason. The harness records that too.)
 
----
+![Multi-step trace: three create_file calls, list_files, final_answer](docs/screenshots/04-multi-step-trace.png)
 
-## The Flight Data Recorder
+## What a failing run looks like, and why that's the point
 
-Every action the agent takes is recorded in the sandbox log before the judge runs. This log is the flight data recorder: a complete, ordered record of the agent's operational trajectory.
+Here is the same three-file task given to a smaller model, SmolLM2 1.7B. It created one file, `c.txt`, and immediately called `final_answer` saying the work was done.
 
-```js
-// Every successful action is appended to the log
-sandboxState.logs.push({
-  step: stepNumber,
-  action: decision.action,
-  result: actionResult,
-});
-```
+![The judge catches an incomplete run: list_files never called](docs/screenshots/06-judge-catches-incomplete.png)
 
-The log captures what actually happened during execution — not what the model claimed it would do, and not what the model reported in its `final_answer`. It is a factual record produced by harness execution.
+The judge marks it **FAILED**: `list_files` was never called, and `a.txt` and `b.txt` don't exist. If you had only read the model's last message, you would have counted this as a success.
 
-This distinction matters. A model can write:
+The harness also enforces the tool boundary. Asked to *"Ring the bell using the ring_bell action, then create bell.txt"*, the agent tries to call `ring_bell`. That tool isn't registered, so the run stops on the spot with a FAILED verdict and nothing else executes.
 
-```json
-{
-  "thought": "I have created the file and read it back successfully.",
-  "action": "final_answer",
-  "parameters": { "result": "All tasks complete." }
-}
-```
+![Unknown action blocked: ring_bell is not a registered action](docs/screenshots/05-unknown-action-blocked.png)
 
-But if the log contains only `create_file` and no `read_file`, the agent is lying about its own trajectory. The judge reads the log, not the claim.
+This is the same idea as a permission system for a real agent. The model can *ask* for anything, but only the actions you've registered ever run.
 
-The **Agent Trace** panel in HarnessBench surfaces this log visually in real time — each step shows the model's thought, the action it called, and the result the harness returned:
+## How the judge decides
 
-```
-STEP 1
-  💭 Thought   Creating a new file as requested.
-  ⚡ Action    create_file  {"filename":"bell.txt","content":"ding ding ding"}
-  ✔ Result    File "bell.txt" created successfully.
+The judge is deterministic JavaScript, not another LLM. It runs two checks:
 
-STEP 2
-  💭 Thought   Now ringing the bell.
-  ⚡ Action    ring_bell  {}
-  ✗ Result    Agent called unregistered action "ring_bell". Run failed.
-```
+1. **Action coverage.** Keywords in the task map to the actions they need ("create" → `create_file`, "read" → `read_file`, "delete" → `delete_file`, "list" → `list_files`, and so on). If the task needs an action the agent never called, the run fails, whatever the agent claimed.
+2. **State assertions.** Every filename mentioned in the task must exist at the end, or must be gone if the task asked for a delete. Variable tasks must leave a stored variable.
 
-The sandbox state panel updates live alongside it — the moment `create_file` executes, the file appears in the state view. The moment `ring_bell` is attempted, the run terminates.
+Because the sandbox starts empty every time and the judge is plain code, the same agent behaviour always gets the same verdict. That makes runs comparable across models.
+
+## Handling messy model output
+
+Small models don't always return clean JSON. In testing, a common habit was to write two decisions back to back, `{...} {...}`, which isn't valid JSON. Others wrap the object in prose or a code fence. HarnessBench takes the **first complete JSON object** in the reply (one action per step) and uses [jsonrepair](https://github.com/josdejong/jsonrepair) to fix things like trailing commas or a missing closing brace. If a reply still has no `action`, the harness tells the model its format was wrong and lets it try again, using up one step.
+
+Two other safeguards keep runs bounded. Each reply is capped at 384 tokens, so a runaway generation can't stall a step for minutes. And the conversation history is trimmed so long runs stay inside a small model's context window.
+
+## The harness checks itself too
+
+A judge you can't trust is worse than no judge. The **Harness Verification** panel runs 29 deterministic tests without loading a model. They cover every action, sandbox isolation, unknown-action handling, judge pass/fail cases (including "only one of three files created"), JSON repair, and context trimming.
+
+![29 of 29 harness self-tests passing](docs/screenshots/07-self-tests.png)
+
+## Results from a real run
+
+All screenshots here come from real models running on WebGPU in Chrome, on a laptop with an Intel Iris Xe integrated GPU:
+
+| Model | Example tasks passed | Typical behaviour |
+|---|---|---|
+| Llama 3.2 3B Instruct (q4f32) | 4 / 4 | Followed steps in order; sometimes repeated a harmless `list_files` |
+| SmolLM2 1.7B Instruct (q4f16) | 1 / 4 | Often stopped after the first step or retried a failing action |
+
+On this hardware the 3B model generates about 3 tokens per second, so one step takes roughly 8–20 seconds and a full task takes one to two minutes. The first load downloads about 1.8 GB. After that it starts from cache in seconds.
+
+## Why this is useful
+
+- **Compare models honestly.** Swap the model in the dropdown and run the same tasks. The verdicts come from the sandbox, not from what the model says about itself.
+- **See *how* an agent fails.** The trace shows wrong ordering, invented tools, early stopping and loops. A single score hides all of that.
+- **Private by default.** Prompts and outputs never leave the machine. That's handy for experimenting with sensitive task descriptions.
+- **Zero setup for teaching and demos.** Share a link. Anyone with Chrome or Edge and a WebGPU-capable GPU can watch an agent run and get graded.
+- **A small, readable reference.** The whole harness is a few hundred lines of plain JavaScript, so it's easy to see how a registry, loop and judge fit together.
+
+## Limitations
+
+Be clear about what this is and isn't:
+
+- **The tasks are toy tasks.** Six in-memory tools are enough to show the ideas, not to benchmark real-world agents.
+- **The judge is keyword-based.** It works for the included task styles. A task worded very differently might not map to the right required actions.
+- **Results vary.** Small models are not deterministic across hardware and versions. Treat the table above as one observation, not a leaderboard.
+- **WebGPU is required.** It works in recent Chrome and Edge with hardware acceleration enabled. Larger models need more GPU memory than many laptops have. If a model starts producing garbled text, clearing the site's data (which resets the cached weights) usually fixes it.
+
+## Try it
+
+Open the [live demo](https://vishalmysore.github.io/harnessBench/), load **Llama 3.2 3B**, click a "Try" chip and press **Run Evaluation**. Then try to break it: ask for a tool that doesn't exist, or a five-step task with a small model, and watch the judge respond.
 
 ---
 
-## The Objective Judge
+### Credits
 
-Once the agent reaches `final_answer` (or the harness terminates the run), the judge evaluates the outcome. It is deterministic and independent of the model — it cannot be influenced by the agent's reasoning or self-assessment.
+HarnessBench builds on open-source work:
 
-The judge performs two checks:
+- [WebLLM](https://github.com/mlc-ai/web-llm) and [MLC LLM](https://github.com/mlc-ai/mlc-llm) by the MLC team: in-browser LLM inference on WebGPU, and the prebuilt quantized models.
+- [Llama 3.2](https://www.llama.com/) by Meta and [SmolLM2](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct) by Hugging Face, plus the other model families listed in the app (Phi-3.5, Gemma 2).
+- [jsonrepair](https://github.com/josdejong/jsonrepair) by Jos de Jong, for recovering malformed JSON.
+- The [WebGPU](https://www.w3.org/TR/webgpu/) standard and its browser implementations.
 
-### 1. Action coverage check
+### Disclaimer
 
-Did the agent attempt every operation the task required? The judge maps task keywords to required actions and verifies each one appears in the log:
-
-```js
-const TASK_ACTION_REQUIREMENTS = [
-  { keywords: ["create"],  action: "create_file"  },
-  { keywords: ["read"],    action: "read_file"    },
-  { keywords: ["delete"],  action: "delete_file"  },
-  { keywords: ["list"],    action: "list_files"   },
-  { keywords: ["set variable"], action: "set_variable" },
-];
-
-const calledActions = finalState.logs.map(l => l.action);
-
-for (const req of TASK_ACTION_REQUIREMENTS) {
-  const mentioned = req.keywords.some(k => command.toLowerCase().includes(k));
-  if (mentioned && !calledActions.includes(req.action)) {
-    return {
-      success: false,
-      reason: `Task incomplete — "${req.action}" was never called.
-               Agent called: [${calledActions.join(", ")}]`,
-    };
-  }
-}
-```
-
-This catches the most common harness evaluation failure: the agent completes step one of a multi-step task, declares success, and a naive judge passes it because the sandbox is non-empty.
-
-### 2. State assertion check
-
-Did the sandbox end up in the correct state? For a create task the file must exist. For a create-then-delete task the file must be absent. For a variable task the variable must be stored.
-
-```js
-// Create-then-delete: correct final state is an empty sandbox
-const shouldDelete = cmd.includes("delete") || cmd.includes("remove");
-if (shouldDelete) {
-  return finalState.files[filename] === undefined
-    ? { success: true,  reason: `File was created then deleted — sandbox correctly empty.` }
-    : { success: false, reason: `File still exists after a delete was requested.` };
-}
-```
-
-The judge never asks the model what happened. It reads the facts — the action log and the sandbox state — and computes a verdict from them.
-
----
-
-## Automated Benchmarking and Reproducible Conditions
-
-A harness that cannot verify itself is not trustworthy. HarnessBench includes a self-test suite: 27 deterministic assertions that exercise every component independently without involving the model at all.
-
-```
-Action Registry       10 tests  — each action creates/reads/errors correctly
-Sandbox Isolation      2 tests  — mutations don't leak between runs
-Unknown Action         3 tests  — unregistered names absent, all registered callable
-Judge / Evaluator      6 tests  — passes when done, fails when incomplete
-JSON Repair            3 tests  — valid JSON, trailing comma, missing brace
-Context Trimming       2 tests  — history ≤ 16 entries, system prompt preserved
-─────────────────────────────────────────────────────────────
-                  27 / 27 passed · all systems go ✓
-```
-
-These tests are the automated benchmarking layer. They run in milliseconds, require no GPU, and prove the harness machinery is working before any model is loaded. If a judge change accidentally breaks the create-then-delete assertion, the test suite catches it immediately.
-
-Representative test cases:
-
-```js
-// Sandbox isolation — state does not leak between runs
-const s1 = freshState();
-s1.files["leak.txt"] = "oops";
-const s2 = freshState();
-assert(s2.files["leak.txt"] === undefined); // PASS
-
-// Judge fails when required action was skipped
-const s = freshState(); // no logs, no files
-const result = evaluateSuccess(s, "create a file called note.txt");
-assert(result.success === false); // PASS
-
-// Judge fails multi-step task when second step was never called
-const s = freshState();
-s.files["note.txt"] = "hi";
-s.logs.push({ action: "create_file" }); // only step 1
-const result = evaluateSuccess(s, "create note.txt then read it back");
-assert(result.success === false); // PASS — read_file was never called
-```
-
----
-
-## The Browser as a Harness Platform
-
-HarnessBench runs the entire stack inside a browser tab:
-
-- **LLM inference** — [@mlc-ai/web-llm](https://github.com/mlc-ai/web-llm) runs quantised models (Llama 3, Phi, Gemma, SmolLM) on the local GPU via WebGPU, inside a Web Worker so inference never blocks the UI
-- **Sandbox** — an in-memory JavaScript object stands in for a Docker container or WASM virtual filesystem
-- **No server required** — deploys as a static site to GitHub Pages; model weights are cached in the browser's IndexedDB after the first download
-
-The browser sandbox is a genuine security boundary: the agent cannot access the real filesystem, cannot make network calls, and cannot execute arbitrary code outside the harness. For evaluation purposes this is equivalent to a containerised environment, at the cost of being limited to the action surface the harness explicitly exposes.
-
-This also makes the harness unusually observable. Every token the model generates streams live to the UI. Every action call is shown in the Agent Trace panel the moment it executes. The sandbox state updates in real time. Nothing is hidden behind a remote API.
-
----
-
-## What This Proves
-
-The screenshot below captures the core guarantee of harness engineering in a single run.
-
-Task: *"create a file and ring the bell"*
-
-```
-✗ FAILED
-Agent called unregistered action "ring_bell". Only registered actions may be used.
-
-STEP 1  create_file {"filename":"bell.txt","content":"ding ding ding"}  → ✓
-STEP 2  ring_bell {}  → ✗  RUN TERMINATED
-```
-
-The file was created — the sandbox state is non-empty — but the harness still fails the run. `ring_bell` is not in the registry. The agent had no path to execute it, no matter how it reasoned about the task.
-
-This is what harness engineering delivers: **the agent's behaviour is bounded by the infrastructure, not by the prompt.** Evaluation is deterministic. Conditions are reproducible. Harmful or unexpected actions cannot leak out. The model's unpredictability is contained inside a controlled laboratory, and what emerges is measurable software.
+HarnessBench is an educational demo, not a production evaluation tool. Verdicts come from simple rule-based checks on toy tasks and should not be used to make claims about any model's real-world capability or safety. Model weights are downloaded from their publishers' hosting and are subject to their own licenses. This is a personal project, not affiliated with or endorsed by any of the projects or companies named above.

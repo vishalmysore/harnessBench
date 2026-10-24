@@ -1,6 +1,10 @@
-import { MLCEngine } from "https://esm.run/@mlc-ai/web-llm";
+import { MLCEngine } from "https://esm.run/@mlc-ai/web-llm@0.2.86";
 
 const engine = new MLCEngine();
+
+// One decision is a short JSON object; cap replies so a runaway generation
+// (e.g. endless whitespace) can't stall a step for minutes.
+const MAX_TOKENS = 384;
 
 self.addEventListener("message", async (event) => {
   const { type, payload } = event.data;
@@ -25,6 +29,7 @@ self.addEventListener("message", async (event) => {
       const stream = await engine.chat.completions.create({
         messages: payload.messages,
         temperature: 0.1,
+        max_tokens: MAX_TOKENS,
         stream: true,
         stream_options: { include_usage: true },
       });
@@ -50,6 +55,7 @@ self.addEventListener("message", async (event) => {
         const response = await engine.chat.completions.create({
           messages: payload.messages,
           temperature: 0.1,
+          max_tokens: MAX_TOKENS,
         });
         const content = response.choices[0].message.content;
         const elapsed = ((performance.now() - t0) / 1000).toFixed(2);

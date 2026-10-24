@@ -35,7 +35,7 @@ HarnessBench is a working implementation of these principles in the browser. See
 - **Live token stream** — watch the model generate tokens as it reasons
 - **JSON repair fallback** — recovers malformed JSON from smaller models automatically
 - **Context trimming** — keeps conversation history within the model's context window
-- **27-test self-verification suite** — proves the harness machinery is correct without involving the model
+- **29-test self-verification suite** — proves the harness machinery is correct without involving the model
 - **GitHub Actions deploy** — pushes to GitHub Pages on every commit to `main`
 
 ---
@@ -44,9 +44,9 @@ HarnessBench is a working implementation of these principles in the browser. See
 
 | Model | Size | Notes |
 |---|---|---|
-| SmolLM2-1.7B | ~1 GB | Recommended — runs on integrated GPUs |
+| Llama 3.2 3B (q4f32) | ~1.8 GB | Recommended — passed all four example tasks on an Intel Iris Xe iGPU |
+| SmolLM2-1.7B | ~1 GB | Fast, but often stops after the first step |
 | Llama 3.2 1B | ~0.8 GB | Fastest, lightest |
-| Llama 3.2 3B | ~1.8 GB | Better instruction following |
 | Phi-3.5 Mini | ~2.3 GB | Strong JSON adherence |
 | Gemma 2 2B | ~1.4 GB | Balanced |
 | Llama 3.1 8B | ~5 GB | Best quality — requires a discrete GPU |
@@ -117,17 +117,18 @@ Any action not in this table causes an immediate FAIL if the agent attempts to c
 
 ## Harness Self-Tests
 
-Click **▶ Run Tests** in the UI (no model needed) to run 27 deterministic assertions:
+Click **▶ Run Tests** in the UI (no model needed) to run 29 deterministic assertions:
 
 ```
 Action Registry        10 tests — each action creates/reads/errors correctly
 Sandbox Isolation       2 tests — mutations don't leak between runs
 Unknown Action          3 tests — unregistered names absent, all registered callable
-Judge / Evaluator       6 tests — passes when done, fails when incomplete
-JSON Repair             3 tests — valid JSON, trailing comma, missing brace
+Judge / Evaluator       7 tests — passes when done, fails when incomplete
+JSON Repair             5 tests — valid JSON, trailing comma, missing brace,
+                                  back-to-back objects, prose/code fences
 Context Trimming        2 tests — history ≤ 16 entries, system prompt preserved
 ──────────────────────────────────────────────────────────
-                   27 / 27 passed · all systems go ✓
+                   29 / 29 passed · all systems go ✓
 ```
 
 ---
@@ -140,7 +141,8 @@ harnessBench/
 ├── style.css           # Dark theme styles
 ├── app.js              # Harness engine — registry, loop, judge, self-tests
 ├── worker.js           # Web Worker — WebLLM model inference
-├── article.md          # Full harness engineering write-up
+├── article.md          # Write-up with screenshots
+├── docs/screenshots/   # Screenshots of real-model runs
 ├── LICENSE             # MIT
 └── .github/
     └── workflows/
@@ -151,15 +153,7 @@ harnessBench/
 
 ## Article
 
-[`article.md`](article.md) covers the full theory and implementation:
-
-- The controlled laboratory environment
-- Feeding tasks and intercepting actions
-- The action registry as a permission boundary
-- The flight data recorder (action log)
-- The objective judge — action coverage + state assertion
-- Automated benchmarking and reproducible conditions
-- Common pitfalls: partial completion false positives, JSON degradation, context overflow
+[`article.md`](article.md) explains the problem (agents grading their own homework), how the harness solves it, and what real runs on an integrated GPU look like, with screenshots in [`docs/screenshots/`](docs/screenshots/).
 
 ---
 

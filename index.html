@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>HarnessBench — In-Browser Agent Evaluator</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚙</text></svg>" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -30,9 +31,9 @@
         <div class="field">
           <label for="model-select">Model</label>
           <select id="model-select">
-            <option value="SmolLM2-1.7B-Instruct-q4f16_1-MLC">SmolLM2-1.7B (Recommended · ~1GB)</option>
+            <option value="Llama-3.2-3B-Instruct-q4f32_1-MLC" selected>Llama 3.2 3B (Recommended · ~1.8GB)</option>
+            <option value="SmolLM2-1.7B-Instruct-q4f16_1-MLC">SmolLM2-1.7B (Fast · weaker agent · ~1GB)</option>
             <option value="Llama-3.2-1B-Instruct-q4f16_1-MLC">Llama 3.2 1B (~0.8GB)</option>
-            <option value="Llama-3.2-3B-Instruct-q4f32_1-MLC">Llama 3.2 3B (~1.8GB)</option>
             <option value="Llama-3.1-8B-Instruct-q4f16_1-MLC">Llama 3.1 8B (~5GB · needs strong GPU)</option>
             <option value="Phi-3.5-mini-instruct-q4f16_1-MLC">Phi-3.5 Mini (~2.3GB)</option>
             <option value="gemma-2-2b-it-q4f16_1-MLC">Gemma 2 2B (~1.4GB)</option>

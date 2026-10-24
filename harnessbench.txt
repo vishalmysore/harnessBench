@@ -1,0 +1,107 @@
+Building a client-side, browser-only evaluation harness powered by WebGPU is a highly practical and private way to test agents. Because it runs entirely inside the browser sandbox, you don't need cloud hosting, API keys, or Docker containers.This guide breaks down how to architect an in-browser harness using modern web technologies.🏗️ The Browser-Only StackTo keep everything local, client-side libraries substitute for server infrastructure:LLM Inference (The Brain): WebLLM or Transformers.js (v3+). They utilize WebGPU to run models like Llama-3-8B, Gemma-2-2B, or SmolLM2 natively on the user's hardware.Sandbox (The Environment): WebAssembly (WASM). For executing code, tools like @webcontainer/api (StackBlitz) can boot up an entire Node.js/Linux-like terminal inside a browser tab, or a lightweight JS eval() sandbox can be used for simpler actions.Agent Logic (The Loop): A lightweight custom state loop or an in-browser graphing engine.🏛️ System ArchitectureA single-page application (SPA) can orchestrate the entire agent loop locally by organizing components into three layers:+-------------------------------------------------------------+
+|                        USER INTERFACE                       |
+|  - Prompt Input     - Model Selector    - Action Defs       |
+|  - Real-time Logs   - State Visualizer  - Judge Verdict     |
++--------------------------+----------------------------------+
+                           |
++--------------------------v----------------------------------+
+|                     THE HARNESS ENGINE                     |
+|                                                             |
+|  [1. Action Registrar]  <-->  [2. Agent Execution Loop]      |
+|  Maps text names to            Feeds context, requests JSON  |
+|  JS/WASM execution             tool calls, invokes registry. |
+|                                                             |
+|  [3. WebGPU Model Engine] <-- [4. The Judge Layer]          |
+|  WebLLM streams tokens        Verifies terminal environment |
+|  & handles system prompts     state against assertions.     |
++--------------------------+----------------------------------+
+                           |
++--------------------------v----------------------------------+
+|                    SANDBOX ENVIRONMENT                      |
+|  - In-Memory State Object / LocalStorage                    |
+|  - WASM Virtual File System (WebContainers)                 |
++-------------------------------------------------------------+
+🛠️ Step-by-Step ImplementationStep 1: Initialize the WebGPU Model (The Brain)Using @mlc-ai/web-llm, you hook directly into the local GPU. The model will run inside a Web Worker so it doesn't freeze your UI while generating tokens.JavaScriptimport { CreateWebWorkerMLCEngine } from "@mlc-ai/web-llm";
+
+// 1. Select and initialize an open-source model via WebGPU
+const selectedModel = "Llama-3-8B-Instruct-q4f16_1-MLC"; 
+
+const engine = await CreateWebWorkerMLCEngine(
+  new Worker(new URL("./worker.js", import.meta.url), { type: "module" }),
+  selectedModel,
+  {
+    initProgressCallback: (report) => console.log("Loading model:", report.text)
+  }
+);
+Step 2: Define and Register Browser ActionsYou want users to define actions. You can capture these as JavaScript schemas containing a name, description, and an executable function that manipulates the local sandbox state.JavaScript// A global register of what the agent is allowed to do
+const actionRegistry = {
+  create_file: {
+    description: "Creates a file in the sandbox memory. Parameters: (filename, content)",
+    execute: (state, { filename, content }) => {
+      state.files[filename] = content;
+      return `File ${filename} created successfully.`;
+    }
+  },
+  read_file: {
+    description: "Reads the content of an existing file. Parameters: (filename)",
+    execute: (state, { filename }) => {
+      return state.files[filename] || `Error: File ${filename} not found.`;
+    }
+  }
+};
+Step 3: Build the Agentic Evaluation LoopThe harness forces the model to respond in a structured JSON format (Thought $\rightarrow$ Action $\rightarrow$ Response) so the browser can easily parse and execute the custom actions.JavaScriptasync function runAgentHarness(userCommand, maxSteps = 5) {
+  // Initialize a fresh sandbox state for this run
+  let sandboxState = { files: {}, logs: [] };
+  let conversationHistory = [
+    { role: "system", content: generateSystemPrompt(actionRegistry) },
+    { role: "user", content: userCommand }
+  ];
+
+  for (let step = 0; step < maxSteps; step++) {
+    // 1. Call the local WebGPU model (forcing JSON output via JSON schema options if needed)
+    const response = await engine.chat.completions.create({
+      messages: conversationHistory,
+      response_format: { type: "json_object" } 
+    });
+
+    const agentDecision = JSON.parse(response.choices[0].message.content);
+    
+    // UI Update: Stream the agent's thought process to the user
+    updateUILogs(`Step ${step}: ${agentDecision.thought}`);
+
+    // Check if the agent thinks it is finished
+    if (agentDecision.action === "final_answer") {
+      return evaluateSuccess(sandboxState, userCommand);
+    }
+
+    // 2. Execute the action inside the browser harness
+    const tool = actionRegistry[agentDecision.action];
+    let actionResult;
+    
+    if (tool) {
+      actionResult = tool.execute(sandboxState, agentDecision.parameters);
+    } else {
+      actionResult = `Error: Action "${agentDecision.action}" does not exist.`;
+    }
+
+    // 3. Feed the result back into the model's short-term memory
+    conversationHistory.push({ role: "assistant", content: JSON.stringify(agentDecision) });
+    conversationHistory.push({ role: "user", content: `Action Result: ${actionResult}` });
+  }
+  
+  return { success: false, reason: "Max execution steps reached without resolution." };
+}
+Step 4: The In-Browser Judge (Evaluation)To see if the agent actually executed the actions successfully, pass the final state of the browser sandbox to an assertion routine. For an completely local build, you can use two approaches:Deterministic Evaluation: Code structural checks directly in Javascript.LLM Judge Evaluation: Use a tiny, ultra-fast WebGPU model (like SmolLM-360M) acting solely as a judge. It receives the original user command and the final sandbox state, returning a flat boolean verdict.JavaScriptfunction evaluateSuccess(finalSandboxState, originalCommand) {
+  // Example deterministic assertion for a file creation task
+  if (originalCommand.includes("create note.txt")) {
+    const success = !!finalSandboxState.files["note.txt"];
+    return {
+      success: success,
+      verdict: success ? "PASSED" : "FAILED",
+      finalState: finalSandboxState
+    };
+  }
+  // Fallback / Custom user assertions
+  return { success: true, finalState: finalSandboxState };
+}
+⚠️ Important Pitfalls to Watch Out ForVRAM Allocation Crash: Running a model locally in the browser requires significant graphics memory. If a user tries to load an 8B parameter model on an integrated laptop GPU, the browser tab will crash instantly. Use a model visibility check or default users to a safe 1B to 3B parameter model.JSON Parsing Failures: Smaller local models running on WebGPU frequently break JSON formatting constraints when tired or deep in a trajectory. You will need to implement a fallback parser (like jsonrepair) or strict Context-Free Grammar (CFG) constraints provided natively by WebLLM's API to ensure the agent outputs readable actions.Context Window Limits: Every loop iteration appends tool responses back into the history. Small local models typically handle a 2k to 4k context token limit before degrading. It helps to trim down old step details if your harness plans to evaluate long, complex trajectories.

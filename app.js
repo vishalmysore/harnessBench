@@ -1,4 +1,4 @@
-import { jsonrepair } from "https://esm.run/jsonrepair";
+import { jsonrepair } from "https://esm.run/jsonrepair@3.15.0";
 
 // ── State ────────────────────────────────────────────────────────────────────
 let worker = null;
@@ -222,23 +222,32 @@ Available actions:
 ${actionList}
 - final_answer: ONLY call this after ALL parts of the task are complete. Parameters: { "result": "<summary of everything done>" }
 
+Example of one valid reply:
+{"thought": "The task asks me to create notes.txt first.", "action": "create_file", "parameters": {"filename": "notes.txt", "content": "buy milk"}}
+
 STRICT RULES:
 1. Respond ONLY with the JSON object. No prose, no markdown, no code fences.
-2. One action per response.
-3. If the task has multiple steps (e.g. "do X and then do Y"), you MUST execute EVERY step before calling final_answer.
-4. If an action does not exist, you MUST still attempt to call it — do NOT silently skip it.
-5. Only call final_answer when every requested operation has been attempted.
-6. parameters must always be an object, even if empty: {}`;
+2. One action per response. Every reply MUST have "thought", "action" and "parameters".
+3. Do the steps in the order the task gives them. If the task has multiple steps (e.g. "do X and then do Y"), you MUST execute EVERY step before calling final_answer.
+4. Do not repeat an action that already succeeded. Use the Action Result messages to see what is done.
+5. If the task asks for an action that is not in the list, still call it by that name — do NOT silently skip it.
+6. Only call final_answer when every requested operation has been attempted.
+7. parameters must always be an object, even if empty: {}`;
 }
 
 // ── Worker bridge ─────────────────────────────────────────────────────────────
 let pendingResolve = null;
+let pendingReject = null;
 
 function initWorker() {
   if (worker) worker.terminate();
   worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
   worker.onmessage = handleWorkerMessage;
-  worker.onerror = (e) => { log("Worker error: " + e.message, "error"); setLoadingState(false); };
+  worker.onerror = (e) => {
+    log("Worker error: " + e.message, "error");
+    setLoadingState(false);
+    if (pendingReject) { pendingReject(new Error(e.message)); pendingResolve = pendingReject = null; }
+  };
 }
 
 function handleWorkerMessage({ data }) {
@@ -272,6 +281,8 @@ function handleWorkerMessage({ data }) {
     log(`✗ Error: ${message}`, "error");
     setLoadingState(false);
     loadProgress.hidden = true;
+    // A chat request is waiting — fail it instead of hanging the run forever
+    if (pendingReject) { pendingReject(new Error(message)); pendingResolve = pendingReject = null; }
 
   } else if (type === "token") {
     // Live token stream
@@ -283,7 +294,7 @@ function handleWorkerMessage({ data }) {
     streamStatus.textContent = "done";
     streamStatus.className = "stream-badge stream-done";
     if (usage || elapsed) updateStatsBar(usage, elapsed);
-    if (pendingResolve) { pendingResolve(content); pendingResolve = null; }
+    if (pendingResolve) { pendingResolve(content); pendingResolve = pendingReject = null; }
   }
 }
 
@@ -291,7 +302,9 @@ function askModel(messages) {
   if (tokenStreamEl) tokenStreamEl.textContent = "";
   streamStatus.textContent = "generating…";
   streamStatus.className = "stream-badge stream-live";
-  return new Promise((resolve) => { pendingResolve = resolve; });
+  const reply = new Promise((resolve, reject) => { pendingResolve = resolve; pendingReject = reject; });
+  worker.postMessage({ type: "chat", payload: { messages } });
+  return reply;
 }
 
 function setLoadingState(loading) {
@@ -324,6 +337,7 @@ runBtn.addEventListener("click", async () => {
 
   running = true;
   runBtn.disabled = true;
+  loadModelBtn.disabled = true; // reloading mid-run would kill the worker
   verdictEl.hidden = true;
   statsBarEl.hidden = true;
   totalPromptTokens = 0;
@@ -348,7 +362,8 @@ runBtn.addEventListener("click", async () => {
   }
 
   running = false;
-  runBtn.disabled = false;
+  runBtn.disabled = !modelReady;
+  loadModelBtn.disabled = false;
   streamStatus.textContent = "idle";
   streamStatus.className = "stream-badge stream-idle";
 });
@@ -365,7 +380,6 @@ async function runAgentHarness(userCommand, maxSteps) {
     void traceCard; // used for DOM side-effects
 
     // Send to model
-    worker.postMessage({ type: "chat", payload: { messages: history } });
     const t0 = performance.now();
     let raw;
     try {
@@ -382,7 +396,7 @@ async function runAgentHarness(userCommand, maxSteps) {
       decision = JSON.parse(raw);
     } catch {
       try {
-        decision = JSON.parse(jsonrepair(raw));
+        decision = parseDecision(raw);
         log("⚠ JSON repaired", "warn");
       } catch {
         log(`✗ Unparseable: ${raw.slice(0, 200)}`, "error");
@@ -390,6 +404,19 @@ async function runAgentHarness(userCommand, maxSteps) {
         fillTraceResult(step, raw.slice(0, 200), false);
         return { success: false, reason: "Agent produced unparseable JSON." };
       }
+    }
+
+    // Valid JSON but not a decision (e.g. no "action" field) is a format error,
+    // not an unregistered action: tell the agent and let it retry within the step budget.
+    if (!decision || typeof decision !== "object" || typeof decision.action !== "string" || !decision.action) {
+      const reason = `Error: reply had no "action" field. Reply with {"thought": ..., "action": ..., "parameters": {...}}.`;
+      fillTraceDecision(step, { thought: "Format error", action: "(none)", parameters: {} });
+      fillTraceResult(step, reason, false);
+      log(`✗ ${reason} Raw: ${raw.slice(0, 160)}`, "error");
+      if (history.length > 16) history.splice(2, 2);
+      history.push({ role: "assistant", content: raw });
+      history.push({ role: "user", content: `Action Result: ${reason}` });
+      continue;
     }
 
     // Fill trace with thought + action
@@ -441,6 +468,36 @@ async function runAgentHarness(userCommand, maxSteps) {
   return { success: false, reason: "Max steps reached without final_answer." };
 }
 
+// ── Decision parsing ──────────────────────────────────────────────────────────
+// Small models often wrap the JSON in prose or code fences, or write several
+// objects back to back ("{...} {...}"). Take the first complete object only —
+// one action per response — and let jsonrepair fix what is left.
+function extractFirstJsonObject(text) {
+  const start = text.indexOf("{");
+  if (start === -1) return text;
+  let depth = 0, inString = false, escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+    } else if (ch === '"') inString = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}" && --depth === 0) return text.slice(start, i + 1);
+  }
+  return text.slice(start); // unclosed — jsonrepair will close it
+}
+
+function parseDecision(raw) {
+  const candidate = extractFirstJsonObject(raw);
+  let parsed;
+  try { parsed = JSON.parse(candidate); }
+  catch { parsed = JSON.parse(jsonrepair(candidate)); }
+  if (Array.isArray(parsed)) parsed = parsed.find(x => x && typeof x === "object");
+  return parsed;
+}
+
 // ── Evaluation judge ──────────────────────────────────────────────────────────
 // Maps keywords in the task to the actions they require.
 const TASK_ACTION_REQUIREMENTS = [
@@ -448,7 +505,7 @@ const TASK_ACTION_REQUIREMENTS = [
   { keywords: ["read", "read it back"],      action: "read_file"     },
   { keywords: ["delete", "remove"],          action: "delete_file"   },
   { keywords: ["list"],                      action: "list_files"    },
-  { keywords: ["set variable", "store"],     action: "set_variable"  },
+  { keywords: ["set variable", "set a variable", "store"],    action: "set_variable"  },
   { keywords: ["get variable", "retrieve"],  action: "get_variable"  },
 ];
 
@@ -475,24 +532,29 @@ function evaluateSuccess(finalState, command) {
   }
 
   // ── Specific state assertions ─────────────────────────────────────────────
-  const fileMatch = command.match(/["']?([\w][\w.-]*\.\w+)["']?/);
-  if (cmd.includes("create") && fileMatch) {
-    const filename = fileMatch[1];
+  // Every filename the task mentions must end up in the expected place
+  const filenames = [...new Set([...command.matchAll(/([\w][\w-]*\.[A-Za-z][A-Za-z0-9]*)/g)].map(m => m[1]))];
+  if (cmd.includes("create") && filenames.length) {
     // If task also asks to delete the file, the absence is expected
     const shouldDelete = cmd.includes("delete") || cmd.includes("remove");
     if (shouldDelete) {
-      if (finalState.files[filename] === undefined) {
-        return { success: true, reason: `File "${filename}" was created then deleted — sandbox correctly empty.` };
+      const left = filenames.filter(f => finalState.files[f] !== undefined);
+      if (left.length === 0) {
+        return { success: true, reason: `${filenames.map(f => `"${f}"`).join(", ")} created then deleted — sandbox correctly empty.` };
       }
-      return { success: false, reason: `File "${filename}" still exists in sandbox after a delete was requested.` };
+      return { success: false, reason: `${left.map(f => `"${f}"`).join(", ")} still exists in sandbox after a delete was requested.` };
     }
-    if (finalState.files[filename] !== undefined) {
-      return { success: true, reason: `File "${filename}" exists: "${String(finalState.files[filename]).slice(0, 60)}"` };
+    const missingFiles = filenames.filter(f => finalState.files[f] === undefined);
+    if (missingFiles.length === 0) {
+      return {
+        success: true,
+        reason: filenames.map(f => `"${f}" exists: "${String(finalState.files[f]).slice(0, 40)}"`).join("; "),
+      };
     }
-    if (Object.keys(finalState.files).length > 0) {
-      return { success: true, reason: `Files in sandbox: ${Object.keys(finalState.files).join(", ")}` };
-    }
-    return { success: false, reason: `No files found in sandbox. Expected "${filename}".` };
+    return {
+      success: false,
+      reason: `Missing from sandbox: ${missingFiles.join(", ")}. Found: [${Object.keys(finalState.files).join(", ") || "none"}].`,
+    };
   }
 
   if (cmd.includes("variable") || cmd.includes("set ")) {
@@ -777,6 +839,19 @@ const HARNESS_TESTS = [
     },
   },
 
+  {
+    group: "Judge / Evaluator",
+    name: "FAIL — only one of three requested files was created",
+    fn() {
+      const s = freshState();
+      s.files["c.txt"] = "x";
+      s.logs.push({ step: 1, action: "create_file", result: "ok" });
+      s.logs.push({ step: 2, action: "list_files", result: "c.txt" });
+      const r = evaluateSuccess(s, "Create three files: a.txt, b.txt, and c.txt. Then list all files.");
+      return { pass: r.success === false, detail: `reason: "${r.reason}"` };
+    },
+  },
+
   // ── JSON Repair ──────────────────────────────────────────────────────────
   {
     group: "JSON Repair",
@@ -808,6 +883,29 @@ const HARNESS_TESTS = [
         const fixed = jsonrepair(broken);
         const parsed = JSON.parse(fixed);
         return { pass: parsed.action === "list_files", detail: `action = "${parsed.action}"` };
+      } catch (e) { return { pass: false, detail: e.message }; }
+    },
+  },
+
+  {
+    group: "JSON Repair",
+    name: "two objects back to back — first one is taken",
+    fn() {
+      const raw = '{"thought":"a","action":"set_variable","parameters":{"key":"x","value":1}} {"thought":"b","action":"get_variable","parameters":{"key":"x"}}';
+      try {
+        const d = parseDecision(raw);
+        return { pass: d?.action === "set_variable", detail: `action = "${d?.action}"` };
+      } catch (e) { return { pass: false, detail: e.message }; }
+    },
+  },
+  {
+    group: "JSON Repair",
+    name: "prose and code fence around the object are ignored",
+    fn() {
+      const raw = 'Sure! Here is my reply:\n```json\n{"thought":"t","action":"list_files","parameters":{}}\n```';
+      try {
+        const d = parseDecision(raw);
+        return { pass: d?.action === "list_files", detail: `action = "${d?.action}"` };
       } catch (e) { return { pass: false, detail: e.message }; }
     },
   },
