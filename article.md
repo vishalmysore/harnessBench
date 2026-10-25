@@ -4,7 +4,7 @@
 
 **Live demo:** [vishalmysore.github.io/harnessBench](https://vishalmysore.github.io/harnessBench/) · **Source code:** [github.com/vishalmysore/harnessBench](https://github.com/vishalmysore/harnessBench)
 
-![HarnessBench: load a model, give it a task, watch every step, and get a verdict](docs/screenshots/01-overview.png)
+![HarnessBench: load a model, give it a task, watch every step, and get a verdict](https://raw.githubusercontent.com/vishalmysore/harnessBench/main/docs/screenshots/01-overview.png)
 
 ---
 
@@ -72,13 +72,13 @@ Here is how each part of harness engineering maps onto the app:
 | Recorder | A live token stream, a step-by-step trace, and the full action log in the sandbox state |
 | Judge | Plain JavaScript that checks which actions were called and what is actually in the sandbox |
 
-![Model loaded and ready to run](docs/screenshots/02-model-ready.png)
+![Model loaded and ready to run](https://raw.githubusercontent.com/vishalmysore/harnessBench/main/docs/screenshots/02-model-ready.png)
 
 ### A run that passes
 
 Pick a task (or click one of the "Try" chips) and press **Run Evaluation**. Here the agent was asked: *"Create a file called note.txt with the content 'hello world', then read it back."*
 
-![A passing run: create_file, then read_file, then final_answer, judged PASSED](docs/screenshots/03-run-passed.png)
+![A passing run: create_file, then read_file, then final_answer, judged PASSED](https://raw.githubusercontent.com/vishalmysore/harnessBench/main/docs/screenshots/03-run-passed.png)
 
 Everything the harness knows is on screen:
 
@@ -89,13 +89,13 @@ Everything the harness knows is on screen:
 
 A longer task shows why the recorder matters. Asked to create three files and list them, Llama 3.2 3B created `a.txt`, `b.txt` and `c.txt` in order, listed them, and finished. It also listed them a second time for no reason. The run still passes, but the trace shows you the wasted step. A single score would have hidden it.
 
-![Multi-step trace: three create_file calls, list_files, then final_answer](docs/screenshots/04-multi-step-trace.png)
+![Multi-step trace: three create_file calls, list_files, then final_answer](https://raw.githubusercontent.com/vishalmysore/harnessBench/main/docs/screenshots/04-multi-step-trace.png)
 
 ### A run that fails, and why that's the useful part
 
 Here is that same three-file task given to a smaller model, SmolLM2 1.7B. This is the "polite liar" from the start of the article. It created only `c.txt`, then declared the job done.
 
-![The judge catches an incomplete run: list_files was never called and two files are missing](docs/screenshots/06-judge-catches-incomplete.png)
+![The judge catches an incomplete run: list_files was never called and two files are missing](https://raw.githubusercontent.com/vishalmysore/harnessBench/main/docs/screenshots/06-judge-catches-incomplete.png)
 
 The judge doesn't care what the model said. It sees that `list_files` was never called and that `a.txt` and `b.txt` don't exist, so the verdict is **FAILED**. This is the whole point of a harness: the agent's confidence has no effect on the score.
 
@@ -103,7 +103,7 @@ The judge doesn't care what the model said. It sees that `list_files` was never 
 
 The tool registry isn't a suggestion. Ask the agent to *"Ring the bell using the ring_bell action, then create bell.txt"* and it will dutifully try to call `ring_bell`. That action isn't registered, so the harness stops the run at once and nothing else executes.
 
-![Unknown action blocked: ring_bell is not a registered action](docs/screenshots/05-unknown-action-blocked.png)
+![Unknown action blocked: ring_bell is not a registered action](https://raw.githubusercontent.com/vishalmysore/harnessBench/main/docs/screenshots/05-unknown-action-blocked.png)
 
 In a real system, the same rule is what keeps an agent from calling a "delete everything" endpoint just because it believes one exists. The model can *ask* for anything; only registered actions ever run.
 
@@ -137,7 +137,7 @@ None of this makes the model smarter. It makes the *measurement* more reliable, 
 
 If the judge has a bug, every verdict is wrong. So HarnessBench includes a **Harness Verification** panel: 29 deterministic tests that run without any model. They cover every action, sandbox isolation, unknown-action blocking, judge pass and fail cases (including "only one of three files was created"), JSON repair and context trimming.
 
-![All 29 harness self-tests passing](docs/screenshots/07-self-tests.png)
+![All 29 harness self-tests passing](https://raw.githubusercontent.com/vishalmysore/harnessBench/main/docs/screenshots/07-self-tests.png)
 
 ---
 
